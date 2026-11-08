@@ -5,6 +5,7 @@ mod demand;
 mod destination_list;
 mod dialog;
 mod direct_manipulation;
+mod frame_log;
 mod direct_write;
 mod directx_atlas;
 mod directx_devices;

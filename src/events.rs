@@ -1508,12 +1508,16 @@ impl WindowsWindowInner {
             (None, FrameRequestSource::NativeCallback),
             |(at, source)| (Some(at), source),
         );
+        let frame_start = crate::frame_log::enabled().then(std::time::Instant::now);
         request_frame(RequestFrameOptions {
             require_presentation: false,
             force_render,
             signal_at,
             signal_source,
         });
+        if let Some(t0) = frame_start {
+            crate::frame_log::record(t0, t0.elapsed());
+        }
 
         self.state.callbacks.request_frame.set(Some(request_frame));
         self.update_ime_enabled(handle);
