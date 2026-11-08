@@ -1477,6 +1477,10 @@ impl WindowsWindowInner {
         self.state.direct_manipulation.update();
 
         let events = self.state.direct_manipulation.drain_events();
+        // rustyfiles: keep frames coming while a touchpad gesture runs (demand-driven frames)
+        if self.state.direct_manipulation.wants_frames() {
+            crate::demand::request();
+        }
         if !events.is_empty() {
             if let Some(mut func) = self.state.callbacks.input.take() {
                 for event in events {

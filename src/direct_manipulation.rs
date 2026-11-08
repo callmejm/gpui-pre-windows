@@ -26,6 +26,11 @@ pub(crate) struct DirectManipulationHandler {
     window: HWND,
     scale_factor: Rc<Cell<f32>>,
     pending_events: Rc<RefCell<Vec<PlatformInput>>>,
+    /// rustyfiles: frames are demand-driven (see `demand`), but DirectManipulation only reports a
+    /// touchpad gesture when `Update` runs, which happens in `draw_window`. While a gesture runs
+    /// (or right after a touch) frames must keep coming, or two-finger scrolling never arrives.
+    active: Rc<Cell<bool>>,
+    touched_until: Cell<Option<std::time::Instant>>,
 }
 
 impl DirectManipulationHandler {
@@ -65,12 +70,14 @@ impl DirectManipulationHandler {
 
             let scale_factor = Rc::new(Cell::new(scale_factor));
             let pending_events = Rc::new(RefCell::new(Vec::new()));
+            let active = Rc::new(Cell::new(false));
 
             let event_handler: IDirectManipulationViewportEventHandler =
                 DirectManipulationEventHandler::new(
                     window,
                     Rc::clone(&scale_factor),
                     Rc::clone(&pending_events),
+                    Rc::clone(&active),
                 )
                 .into();
 
@@ -86,6 +93,8 @@ impl DirectManipulationHandler {
                 window,
                 scale_factor,
                 pending_events,
+                active,
+                touched_until: Cell::new(None),
             })
         }
     }
@@ -101,6 +110,9 @@ impl DirectManipulationHandler {
             if GetPointerType(pointer_id, &mut pointer_type).is_ok() && pointer_type == PT_TOUCHPAD
             {
                 self.viewport.SetContact(pointer_id).log_err();
+                self.touched_until
+                    .set(Some(std::time::Instant::now() + std::time::Duration::from_millis(300)));
+                crate::demand::request();
             }
         }
     }
@@ -109,6 +121,15 @@ impl DirectManipulationHandler {
         unsafe {
             self.update_manager.Update(None).log_err();
         }
+    }
+
+    /// True while a gesture runs (or shortly after a touch): the caller keeps requesting frames.
+    pub fn wants_frames(&self) -> bool {
+        self.active.get()
+            || self
+                .touched_until
+                .get()
+                .is_some_and(|t| std::time::Instant::now() < t)
     }
 
     pub fn drain_events(&self) -> Vec<PlatformInput> {
@@ -143,6 +164,7 @@ struct DirectManipulationEventHandler {
     last_y_offset: Cell<f32>,
     scroll_phase: Cell<TouchPhase>,
     pending_events: Rc<RefCell<Vec<PlatformInput>>>,
+    active: Rc<Cell<bool>>,
 }
 
 impl DirectManipulationEventHandler {
@@ -150,6 +172,7 @@ impl DirectManipulationEventHandler {
         window: HWND,
         scale_factor: Rc<Cell<f32>>,
         pending_events: Rc<RefCell<Vec<PlatformInput>>>,
+        active: Rc<Cell<bool>>,
     ) -> Self {
         Self {
             window,
@@ -160,6 +183,7 @@ impl DirectManipulationEventHandler {
             last_y_offset: Cell::new(0.0),
             scroll_phase: Cell::new(TouchPhase::Started),
             pending_events,
+            active,
         }
     }
 
@@ -213,6 +237,11 @@ impl IDirectManipulationViewportEventHandler_Impl for DirectManipulationEventHan
     ) -> windows_core::Result<()> {
         if current == previous {
             return Ok(());
+        }
+        let running = current == DIRECTMANIPULATION_RUNNING || current == DIRECTMANIPULATION_INERTIA;
+        self.active.set(running);
+        if running {
+            crate::demand::request();
         }
 
         // A new gesture interrupted inertia, so end the old sequence.
