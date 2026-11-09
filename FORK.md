@@ -15,6 +15,7 @@ rasterizer running the same HLSL shaders).
 | `src/directx_renderer.rs` | `begin_switch()` / `finish_switch()` (hot swap), `commit_pending`, frame timing hook in `draw()`, `wait_for_gpu()`, device-independent DirectComposition device, pipelines/globals made `pub(crate)` so they can be prebuilt. |
 | `src/events.rs` | `WM_GPUI_GPU_DEVICE_LOST` with `graceful_switch` runs `begin_switch` instead of the destructive device-lost path. |
 | `src/platform.rs` | Vsync thread picks up a pre-warmed device and runs `switch_backend()`; monitor started in `attach_gpu()`. |
+| `src/events.rs`, `src/window.rs` (closing) | The OLE drop target is revoked in `WM_DESTROY`, while the HWND is still valid. Upstream revokes it in `WindowsWindow::drop`, after a user-closed window is already destroyed: `RevokeDragDrop` failed, the drop target kept its `Rc<WindowsWindowInner>` and every closed window leaked its state and GPU buffers (~28 MB, rustyfiles issue #3). `drop` only hides/destroys a window that still exists. Live windows are counted (`windows alive`, debug log). |
 
 ## Public API (`gpui_windows::hybrid`)
 

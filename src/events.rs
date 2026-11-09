@@ -383,6 +383,11 @@ impl WindowsWindowInner {
     }
 
     fn handle_destroy_msg(&self, handle: HWND) -> Option<isize> {
+        // rustyfiles fork: the drop target holds this window's state (and through it the GPU
+        // buffers) until it is revoked, and only a live HWND can be revoked: here, not in
+        // `WindowsWindow::drop`, which runs after the window is gone (closing windows leaked
+        // ~30 MB each in background mode).
+        unsafe { windows::Win32::System::Ole::RevokeDragDrop(handle).log_err() };
         let callback = { self.state.callbacks.close.take() };
         // Re-enable parent window if this was a modal dialog
         if let Some(parent_hwnd) = self.parent_hwnd {

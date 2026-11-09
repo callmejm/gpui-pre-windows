@@ -109,6 +109,28 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) main_receiver: PriorityQueueReceiver<RunnableVariant>,
     pub(crate) platform_window_handle: HWND,
     pub(crate) parent_hwnd: Option<HWND>,
+    _alive: AliveWindow,
+}
+
+/// Counts live platform windows (a closed window whose state stays alive keeps its GPU
+/// buffers): logged at debug level as `windows alive`.
+pub(crate) static WINDOWS_ALIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct AliveWindow;
+
+impl AliveWindow {
+    fn new() -> Self {
+        let n = WINDOWS_ALIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        log::debug!("windows alive: {n} (opened)");
+        AliveWindow
+    }
+}
+
+impl Drop for AliveWindow {
+    fn drop(&mut self) {
+        let n = WINDOWS_ALIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) - 1;
+        log::debug!("windows alive: {n} (freed)");
+    }
 }
 
 impl WindowsWindowState {
@@ -300,6 +322,7 @@ impl WindowsWindowInner {
             platform_window_handle: context.platform_window_handle,
             system_settings: WindowsSystemSettings::new(),
             parent_hwnd: context.parent_hwnd,
+            _alive: AliveWindow::new(),
         }))
     }
 
@@ -613,7 +636,9 @@ impl rwh::HasDisplayHandle for WindowsWindow {
 impl Drop for WindowsWindow {
     fn drop(&mut self) {
         self.0.dialog_owner.close();
-        unsafe { ShowWindowAsync(self.0.hwnd, SW_HIDE).ok().log_err() };
+        if unsafe { IsWindow(Some(self.0.hwnd)).as_bool() } {
+            unsafe { ShowWindowAsync(self.0.hwnd, SW_HIDE).ok().log_err() };
+        }
         // `DestroyWindow` below sends `WM_SHOWWINDOW`; without a callback the
         // resulting visibility report has nothing to notify.
         self.0.state.callbacks.visibility_change.take();
@@ -624,9 +649,13 @@ impl Drop for WindowsWindow {
             .spawn(async move {
                 this.dialog_owner.when_idle().await;
                 let handle = this.hwnd;
-                unsafe {
-                    RevokeDragDrop(handle).log_err();
-                    DestroyWindow(handle).log_err();
+                // closed by the user, the window is already destroyed (and its drop target
+                // revoked in WM_DESTROY); closed by the app, it goes now
+                if unsafe { IsWindow(Some(handle)).as_bool() } {
+                    unsafe {
+                        RevokeDragDrop(handle).log_err();
+                        DestroyWindow(handle).log_err();
+                    }
                 }
             })
             .detach();
