@@ -99,6 +99,14 @@ effect shown while hovering (`gpui_windows::dnd_hint::set(MOVE|COPY|LINK|NONE)`)
 overriding like Explorer. `Drop` still returns COPY so a source never deletes originals; the app
 performs the transfer itself.
 
+## Drop paths read again at drop time (`src/window.rs`)
+Upstream reads `CF_HDROP` once, in `DragEnter`. Some sources hand out final paths only after the
+mouse button is up: WinRAR gives a bare file name during the drag and extracts into
+`%TEMP%\Rar$DRa…\` only when `CF_HDROP` is read at drop. `Drop` reads `CF_HDROP` again; when the
+paths differ from those of `DragEnter`, it sends `Exited` and a new `Entered` with the fresh paths
+before `Submit` (GPUI keeps the first drag's paths on a second `Entered`). Drags whose paths don't
+change (Explorer) take the same path as before.
+
 ## Demand-driven frames (`src/demand.rs`)
 Upstream invalidates every window on every vsync, waking the UI thread 60–240×/s even when idle.
 The fork implements GPUI core's `PlatformWindow::frame_waker` / `schedule_frame` for Windows:

@@ -1186,7 +1186,36 @@ impl accesskit::ActionHandler for A11yActionHandler {
 }
 
 #[implement(IDropTarget)]
-struct WindowsDragDropHandler(pub Rc<WindowsWindowInner>);
+struct WindowsDragDropHandler(pub Rc<WindowsWindowInner>, RefCell<SmallVec<[PathBuf; 2]>>);
+
+/// rustyfiles fork: the `CF_HDROP` paths of a data object, or `None` when it offers none.
+unsafe fn read_hdrop_paths(idata_obj: &IDataObject) -> Option<SmallVec<[PathBuf; 2]>> {
+    let config = FORMATETC {
+        cfFormat: CF_HDROP.0,
+        ptd: std::ptr::null_mut() as _,
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as _,
+    };
+    unsafe {
+        if idata_obj.QueryGetData(&config as _) != S_OK {
+            return None;
+        }
+        let mut idata = idata_obj.GetData(&config as _).log_err()?;
+        if idata.u.hGlobal.is_invalid() {
+            return None;
+        }
+        let hdrop = HDROP(idata.u.hGlobal.0);
+        let mut paths = SmallVec::<[PathBuf; 2]>::new();
+        with_file_names(hdrop, |file_name| {
+            if let Some(path) = PathBuf::from_str(&file_name).log_err() {
+                paths.push(path);
+            }
+        });
+        ReleaseStgMedium(&mut idata);
+        Some(paths)
+    }
+}
 
 impl WindowsDragDropHandler {
     fn handle_drag_drop(&self, input: PlatformInput) {
@@ -1208,31 +1237,11 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
     ) -> windows::core::Result<()> {
         unsafe {
             let idata_obj = pdataobj.ok()?;
-            let config = FORMATETC {
-                cfFormat: CF_HDROP.0,
-                ptd: std::ptr::null_mut() as _,
-                dwAspect: DVASPECT_CONTENT.0,
-                lindex: -1,
-                tymed: TYMED_HGLOBAL.0 as _,
-            };
             let cursor_position = POINT { x: pt.x, y: pt.y };
-            if idata_obj.QueryGetData(&config as _) == S_OK {
+            if let Some(paths) = read_hdrop_paths(idata_obj) {
                 // rustyfiles fork: app-chosen effect (see dnd_hint.rs)
                 *pdweffect = crate::dnd_hint::effect_for(grfkeystate);
-                let Some(mut idata) = idata_obj.GetData(&config as _).log_err() else {
-                    return Ok(());
-                };
-                if idata.u.hGlobal.is_invalid() {
-                    return Ok(());
-                }
-                let hdrop = HDROP(idata.u.hGlobal.0);
-                let mut paths = SmallVec::<[PathBuf; 2]>::new();
-                with_file_names(hdrop, |file_name| {
-                    if let Some(path) = PathBuf::from_str(&file_name).log_err() {
-                        paths.push(path);
-                    }
-                });
-                ReleaseStgMedium(&mut idata);
+                *self.1.borrow_mut() = paths.clone();
                 let mut cursor_position = cursor_position;
                 ScreenToClient(self.0.hwnd, &mut cursor_position)
                     .ok()
@@ -1319,6 +1328,26 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                 .log_err();
         }
         let scale_factor = self.0.state.scale_factor.get();
+        let position = logical_point(
+            cursor_position.x as f32,
+            cursor_position.y as f32,
+            scale_factor,
+        );
+        // rustyfiles fork: some sources hand out final paths only once the mouse button is up.
+        // WinRAR gives a bare file name during DragEnter and extracts into %TEMP%\Rar$DRa…
+        // only when CF_HDROP is read at drop time, so read it again and swap in the new paths.
+        let fresh = unsafe { read_hdrop_paths(idata_obj) };
+        if let Some(fresh) = fresh {
+            let changed = *self.1.borrow() != fresh;
+            if changed {
+                *self.1.borrow_mut() = fresh.clone();
+                self.handle_drag_drop(PlatformInput::FileDrop(FileDropEvent::Exited));
+                self.handle_drag_drop(PlatformInput::FileDrop(FileDropEvent::Entered {
+                    position,
+                    paths: ExternalPaths(fresh),
+                }));
+            }
+        }
         let input = PlatformInput::FileDrop(FileDropEvent::Submit {
             position: logical_point(
                 cursor_position.x as f32,
@@ -1561,7 +1590,7 @@ fn get_module_handle() -> HMODULE {
 
 fn register_drag_drop(window: &Rc<WindowsWindowInner>) -> Result<()> {
     let window_handle = window.hwnd;
-    let handler = WindowsDragDropHandler(window.clone());
+    let handler = WindowsDragDropHandler(window.clone(), RefCell::default());
     // The lifetime of `IDropTarget` is handled by Windows, it won't release until
     // we call `RevokeDragDrop`.
     // So, it's safe to drop it here.
