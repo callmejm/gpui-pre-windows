@@ -387,7 +387,12 @@ impl WindowsWindowInner {
         // buffers) until it is revoked, and only a live HWND can be revoked: here, not in
         // `WindowsWindow::drop`, which runs after the window is gone (closing windows leaked
         // ~30 MB each in background mode).
-        unsafe { windows::Win32::System::Ole::RevokeDragDrop(handle).log_err() };
+        // (popups never registered one: DRAGDROP_E_NOTREGISTERED is expected there)
+        if let Err(e) = unsafe { windows::Win32::System::Ole::RevokeDragDrop(handle) } {
+            if e.code() != windows::Win32::Foundation::DRAGDROP_E_NOTREGISTERED {
+                log::warn!("revoking the drop target: {e}");
+            }
+        }
         let callback = { self.state.callbacks.close.take() };
         // Re-enable parent window if this was a modal dialog
         if let Some(parent_hwnd) = self.parent_hwnd {
