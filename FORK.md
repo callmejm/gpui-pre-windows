@@ -106,12 +106,17 @@ the vsync thread only invalidates when GPUI signals a dirty window / animation f
 Measured (debug build, idle window): 203 ms CPU per 10 s → 31 ms per 10 s.
 `RUSTYFILES_CONTINUOUS_FRAMES=1` restores upstream behaviour for comparison.
 
-## Fast start (hybrid.rs)
-In Auto mode the first device is WARP (ready ~190 ms sooner than the NVIDIA device). The monitor's
+## Fast start (hybrid.rs) — off by default since 2026-11-09
+Opt-in with `RUSTYFILES_FAST_START=1`. It made the window appear sooner but WARP drew the first
+frames on every core until the hot-swap: ~4 s of CPU time at launch against ~0.8 s when Auto opens
+straight on the GPU (rustyfiles' speed test showed it as a CPU column worse than Explorer's).
+Auto now opens on the hardware adapter when one works and falls back to WARP when none does.
+
+When enabled: in Auto mode the first device is WARP (ready ~190 ms sooner than the NVIDIA device). The monitor's
 first tick hot-swaps to the GPU if it is not busy (pre-warmed off-thread, ~13 ms on the message
 loop); if the GPU is saturated at launch (game, render) the app stays on the CPU and never touches
 it. The old device is `ClearState`/`Flush`/`Trim`med on every switch so WARP heaps are returned
-(private bytes after the startup switch: 166 MB → 106 MB). Disable with `RUSTYFILES_FAST_START=0`.
+(private bytes after the startup switch: 166 MB → 106 MB).
 Measured (release): window visible 465 ms → ~300 ms.
 
 ## GPU latency probe (hybrid policy input)

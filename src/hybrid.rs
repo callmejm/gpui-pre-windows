@@ -12,6 +12,7 @@
 //!
 //! Configuration (read once, at first device creation):
 //! * `RUSTYFILES_RENDERER=auto|gpu|cpu` (default `auto`)
+//! * `RUSTYFILES_FAST_START=1` (open on WARP first in `auto`, then hot-swap to the GPU; off by default)
 //! * `RUSTYFILES_FRAME_LOG=1` (debug: log a frame-time histogram line every 2 s; a file path instead of 1 also appends raw samples there)
 //! * `RUSTYFILES_RENDERER_FLIP_SECS=N` (debug: force a switch every N seconds while in `auto`)
 
@@ -261,8 +262,13 @@ pub(crate) fn desired_backend_for_new_devices() -> RendererBackend {
 
 static FAST_START: AtomicBool = AtomicBool::new(false);
 
+/// Off by default: opening on WARP saves ~190 ms of window time but costs seconds of CPU on
+/// every core until the hot-swap (measured: ~4 s of CPU time at launch against ~0.8 s on the
+/// GPU). Auto opens on the GPU when a hardware adapter works (device creation falls back to
+/// WARP when none does) and still moves to WARP while the GPU is saturated.
+/// `RUSTYFILES_FAST_START=1` turns it back on.
 fn fast_start_enabled() -> bool {
-    std::env::var("RUSTYFILES_FAST_START").map_or(true, |v| v.trim() != "0")
+    std::env::var("RUSTYFILES_FAST_START").is_ok_and(|v| v.trim() == "1")
 }
 
 pub(crate) fn set_current_backend(backend: RendererBackend) {
